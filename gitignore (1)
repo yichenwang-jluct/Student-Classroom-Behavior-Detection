@@ -1,0 +1,40 @@
+# ===== 数据集（体积大，不上传，只保留配置 yaml）=====
+datasets/
+*/images/
+*/labels/
+*.cache
+
+# ===== 模型权重 =====
+# best.pt 建议放到 GitHub Release，而不是直接提交
+# 如果你确实想把 best.pt 留在仓库里，把下面这行注释掉
+*.pt
+*.pth
+*.onnx
+*.engine
+*.torchscript
+
+# ===== 训练产物 =====
+# 默认只保留 exp101 这一个有代表性的结果目录，其余 runs 忽略
+runs/
+!runs/train/exp101/
+runs/train/exp101/weights/*.pt
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+build/
+dist/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+
+# ===== IDE / 系统文件 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
