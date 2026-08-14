@@ -1,0 +1,28 @@
+# UCB-Dataset — University Classroom Behaviour dataset
+#
+# Images are NOT distributed with this repository (human subjects; see the Data
+# Availability statement in the paper). Place the dataset so that the layout is:
+#
+#   <this repo>/../datasets/
+#   ├── train/images/   train/labels/     2,061 images
+#   ├── valid/images/   valid/labels/       197 images
+#   └── test/images/    test/labels/         98 images
+#
+# The exact file lists used in the paper are in splits/{train,val,test}.txt.
+
+path: ../datasets          # dataset root, relative to this repository
+train: train/images        # 2,061 images
+val: valid/images          #   197 images
+test: test/images          #    98 images
+
+nc: 6
+names: ['bowing_the_head', 'hand_raising', 'learning_over_the_table', 'reading', 'using_phone', 'writing']
+
+# Instance counts (train / val / test):
+#   bowing_the_head            20 /    7 /    4
+#   hand_raising           23,604 / 2,171 / 1,172
+#   learning_over_the_table 9,024 /   908 /   443
+#   reading                20,767 / 2,066 / 1,002
+#   using_phone             2,804 /   259 /   140
+#   writing                 3,032 /   308 /   149
+#   total                  59,251 / 5,719 / 2,910   (67,880 boxes over 2,356 images)

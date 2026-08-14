@@ -1,0 +1,64 @@
+# GBH-YOLO  (for the modified Ultralytics build; tuned for an 8 GB GPU)
+#   backbone : YOLOv8s
+#   neck     : GFPN queen-fusion = Concat + CSPStage        (Section 3.1, Eq. 1)
+#   attention: BiLevelRoutingAttention, applied at P4/P5 only (Section 3.2)
+#   heads    : four depthwise-separable decoupled heads Detect_Light,
+#              P2/P3/P4/P5 = 160/80/40/20                    (Section 3.3)
+#   loss     : DF-CIoU                                       (Section 3.4, see loss.py)
+#
+# Why BRA is restricted to P4/P5 (see Section 3.2):
+#   - at P2 (160) the region-routing matrix is ~529x529 and peaks at tens of GB
+#   - at P3 (80) the peak is ~6 GB, still out of memory on an 8 GB device
+#   - at P4 (40) / P5 (20) the memory cost is negligible
+#   Coarse levels are also where sparse routing helps most, because one region
+#   spans a group of seated students; the accuracy cost of skipping the two
+#   high-resolution levels is small.
+nc: 6
+
+scales:
+  s: [0.33, 0.50, 1024]
+
+backbone:
+  - [-1, 1, Conv,  [64, 3, 2]]    # 0-P1/2
+  - [-1, 1, Conv,  [128, 3, 2]]   # 1-P2/4
+  - [-1, 3, C2f,   [128, True]]   # 2    -> B2 (shallow P2 feature)
+  - [-1, 1, Conv,  [256, 3, 2]]   # 3-P3/8
+  - [-1, 6, C2f,   [256, True]]   # 4    -> P3 skip
+  - [-1, 1, Conv,  [512, 3, 2]]   # 5-P4/16
+  - [-1, 6, C2f,   [512, True]]   # 6    -> P4 skip
+  - [-1, 1, Conv,  [1024, 3, 2]]  # 7-P5/32
+  - [-1, 3, C2f,   [1024, True]]  # 8
+  - [-1, 1, SPPF,  [1024, 5]]     # 9    -> P5
+
+head:
+  # ===== top-down path =====
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 10  P5->P4
+  - [[-1, 6], 1, Concat, [1]]                    # 11
+  - [-1, 1, CSPStage, [512]]                     # 12  N4 (no BRA; used directly as the skip source)
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 13  N4->P3
+  - [[-1, 4], 1, Concat, [1]]                    # 14
+  - [-1, 1, CSPStage, [256]]                     # 15  N3 (no BRA)
+
+  # ===== P2 branch (no BRA) =====
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 16  N3->P2 (160x160)
+  - [[-1, 2], 1, Concat, [1]]                    # 17
+  - [-1, 1, CSPStage, [128]]                     # 18  N2 -> head P2/4
+
+  # ===== bottom-up path (queen-fusion) =====
+  - [-1, 1, Conv, [128, 3, 2]]                   # 19  N2->P3 (down)
+  - [[-1, 15, 13], 1, Concat, [1]]               # 20  cat(down N2, skip N3, up-path N4)
+  - [-1, 1, CSPStage, [256]]                     # 21  N3 out -> head P3/8 (no BRA)
+
+  - [-1, 1, Conv, [256, 3, 2]]                   # 22  N3out->P4 (down)
+  - [[-1, 12, 10], 1, Concat, [1]]               # 23  cat(down N3out, skip N4, up-path P5)
+  - [-1, 1, CSPStage, [512]]                     # 24  N4 out
+  - [-1, 1, BiLevelRoutingAttention, []]         # 25  BRA(P4/40) -> head P4/16
+
+  - [-1, 1, Conv, [512, 3, 2]]                   # 26  N4out->P5 (down)
+  - [[-1, 9], 1, Concat, [1]]                    # 27  cat(down N4out, skip P5)
+  - [-1, 1, CSPStage, [1024]]                    # 28  N5 out
+  - [-1, 1, BiLevelRoutingAttention, []]         # 29  BRA(P5/20) -> head P5/32
+
+  # ===== four lightweight decoupled heads: P2/4(160), P3/8(80), P4/16(40), P5/32(20) =====
+  - [[18, 21, 25, 29], 1, Detect_Light, [nc]]    # 30  lightweight decoupled heads (4 scales)
