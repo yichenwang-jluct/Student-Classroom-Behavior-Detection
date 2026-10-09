@@ -1,16 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-GBH-YOLO training script.
+GBH-YOLO training script (single GPU).
 
-The `on_train_epoch_start` callback registered below is REQUIRED: it advances
-DFState.epoch so that the DF-CIoU interval [d(t), u(t)] moves with training.
+    python scripts/train.py --model ultralytics/cfg/models/Add/GBH-YOLO.yaml --seed 0   # full model
+    python scripts/train.py --model ultralytics/cfg/models/Add/yolov8s.yaml --seed 0    # baseline
+
+--df-ciou selects the bounding-box regression loss:
+    auto (default)  DF-CIoU for GBH-YOLO configurations, standard CIoU otherwise
+    on / off        force DF-CIoU / standard CIoU (e.g. the ablation rows without DF-CIoU)
+
+The `on_train_epoch_start` callback registered below is REQUIRED for DF-CIoU: it
+advances DFState.epoch so that the interval [d(t), u(t)] moves with training.
 Without it the loss silently degenerates to standard CIoU.
 
-Run from the repository root:
-    python scripts/train.py
+Run from the repository root.
 """
 import argparse
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
@@ -32,6 +39,8 @@ def main():
     ap.add_argument('--model', default=DEFAULT_MODEL,
                     help='GBH-YOLO.yaml for the full model, yolov8s.yaml for the baseline')
     ap.add_argument('--data', default=DEFAULT_DATA)
+    ap.add_argument('--df-ciou', choices=['auto', 'on', 'off'], default='auto',
+                    help='auto: on for GBH-YOLO configs, off otherwise')
     ap.add_argument('--epochs', type=int, default=200)
     ap.add_argument('--batch', type=int, default=4)
     ap.add_argument('--imgsz', type=int, default=640)
@@ -40,8 +49,15 @@ def main():
     ap.add_argument('--name', default='gbh')
     args = ap.parse_args()
 
+    if args.df_ciou == 'auto':
+        DFState.enabled = 'gbh' in Path(args.model).stem.lower()
+    else:
+        DFState.enabled = args.df_ciou == 'on'
+    print(f'[DF-CIoU] {"ON  (d0=%.2f, u0=%.2f)" % (DFState.d0, DFState.u0) if DFState.enabled else "OFF (standard CIoU)"}',
+          flush=True)
+
     model = YOLO(args.model)
-    model.add_callback('on_train_epoch_start', sync_df_state)   # <-- required
+    model.add_callback('on_train_epoch_start', sync_df_state)   # <-- required for DF-CIoU
 
     model.train(
         data=args.data,
@@ -54,7 +70,7 @@ def main():
         momentum=0.937,
         weight_decay=0.0005,
         warmup_epochs=3,
-        cos_lr=False,
+        cos_lr=False,              # linear decay
         close_mosaic=0,            # mosaic stays on for the whole schedule
         seed=args.seed,
         deterministic=True,        # not fully effective under torch 1.12.1 + CUDA
@@ -74,18 +90,12 @@ if __name__ == '__main__':
 # ---------------------------------------------------------------------------
 # Checking that DF-CIoU is active
 #
-#   BboxLoss prints one [DF-PROBE] line per epoch, e.g.
+#   The script prints "[DF-CIoU] ON" at start-up, and BboxLoss then prints one
+#   [DF-PROBE] line per epoch, e.g.
 #     [DF-PROBE] epoch=0/200    t=0.0000  d=0.0000  u=1.0000
 #     [DF-PROBE] epoch=100/200  t=0.5000  d=0.1000  u=0.9750
 #     [DF-PROBE] epoch=199/200  t=0.9950  d=0.1990  u=0.9503
 #   If d stays at 0.0000 the callback is not firing — stop and fix it.
 #
-# Ablation rows without DF-CIoU: set `self.use_df_ciou = False` in
-# ultralytics/utils/loss.py (BboxLoss.__init__). Set it to True to reproduce
-# the full GBH-YOLO configuration.
-#
-# Reproducing the paper's runs:
-#   full model  python scripts/train.py --model ultralytics/cfg/models/Add/GBH-YOLO.yaml
-#   baseline    python scripts/train.py --model ultralytics/cfg/models/Add/yolov8s.yaml
-#   three seeds --seed 0 / 42 / 2024
+# Reproducing the paper's runs: seeds 0, 42 and 2024 (--seed).
 # ---------------------------------------------------------------------------

@@ -326,12 +326,12 @@ class BboxLoss(nn.Module):
         super().__init__()
         self.reg_max = reg_max
         self.use_dfl = use_dfl
-        # ---- DF-CIoU switch and final-state parameters (Section 3.4: d0=0.2, u0=0.95) ----
-        self.use_df_ciou = False     # True = DF-CIoU; False = standard CIoU.
-        # Set to True to reproduce the full GBH-YOLO; leave False for the ablation
-        # rows of Table 3 that are marked without DF-CIoU.
-        self.df_d0 = 0.2
-        self.df_u0 = 0.95
+        # ---- DF-CIoU (Section 3.4) ----
+        # On/off is taken from DFState.enabled, which scripts/train.py sets from --df-ciou
+        # (auto: on for GBH-YOLO configs, off otherwise). False = standard CIoU.
+        from ultralytics.utils.df_ciou import DFState
+        self.use_df_ciou = DFState.enabled
+        self.df_d0, self.df_u0 = DFState.d0, DFState.u0   # final-state interval [0.2, 0.95]
 
     def _df_interval(self):
         """Dynamic mapping interval d(t), u(t) from training progress; t/T comes from DFState."""
@@ -347,17 +347,12 @@ class BboxLoss(nn.Module):
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask, hw=None):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask],
-                       xywh=False, GIoU=False, DIoU=False, CIoU=True, EIoU=False, SIoU=False, WIoU=False,
-                       ShapeIoU=False, hw=hw[fg_mask], mpdiou=False, Inner=False, Focaleriou=False,
-                       d=0.00, u=0.95, ratio=0.75, eps=1e-7, scale=0.0)
-        # Set the corresponding flag to True to select an IoU variant.
-        # Note: keep Focaleriou False. The dynamic mapping is handled by use_df_ciou
-            # below; do not stack the two.
+        # CIoU from the stock Ultralytics 8.2.18 bbox_iou (hw is accepted for call compatibility, unused)
+        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
 
         if self.use_df_ciou:
             # `iou` here is CIoU (geometric penalty included). The Focaler mapping is applied
-                # to the plain IoU so that the geometric term is left untouched:
+            # to the plain IoU so that the geometric term is left untouched:
             #   L_DF-CIoU = (1 - IoU_DF) + penalty,  penalty = IoU_plain - CIoU   (Eq. 7)
             iou_plain = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask],
                                  xywh=False, CIoU=False, eps=1e-7)

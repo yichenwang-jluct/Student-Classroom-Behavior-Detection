@@ -12,14 +12,21 @@ __all__ = ["DFState", "df_ciou_components"]
 
 
 class DFState:
-    """Holds training progress so the loss can compute d(t) and u(t).
-    `epoch` is advanced by the on_train_epoch_start callback in scripts/train.py.
+    """Shared DF-CIoU state.
 
-    Note: at training time the effective d(t)/u(t) are computed in
-    BboxLoss._df_interval() of ultralytics/utils/loss.py, using self.df_d0 /
-    self.df_u0. The values here are kept identical and are used only when
-    df_ciou_components() is called directly.
+    enabled  -- whether BboxLoss uses DF-CIoU (True) or standard CIoU (False);
+                set by scripts/train.py from --df-ciou before training starts.
+    epoch,
+    epochs   -- training progress; `epoch` is advanced by the on_train_epoch_start
+                callback in scripts/train.py. Without the callback t stays at 0 and
+                the loss is numerically identical to standard CIoU.
+    d0, u0   -- final-state interval of Eq. 5 (Section 3.4). BboxLoss reads them
+                from here, so this is the single place to change them.
+
+    Single-process (single-GPU) training only: class attributes set in the
+    launching script are not propagated to DDP worker processes.
     """
+    enabled = False
     epoch = 0
     epochs = 200
     d0 = 0.2
@@ -63,7 +70,7 @@ def df_ciou_components(pred, target, d=None, u=None, eps=1e-7):
     loss_per_box = 1 - IoU_DF + penalty   (Eq. 7); IoU_DF is the linear interval
     mapping of Eq. 6.
     `iou` is the plain IoU, reused for DFL and the quality weights.
-    pred, target: (..., 4) xyxy。
+    pred, target: (..., 4) xyxy.
     """
     if d is None or u is None:
         d, u = DFState.interval()

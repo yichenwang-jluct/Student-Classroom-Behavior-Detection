@@ -1,19 +1,5 @@
-# GBH-YOLO  (for the modified Ultralytics build; tuned for an 8 GB GPU)
-#   backbone : YOLOv8s
-#   neck     : GFPN queen-fusion = Concat + CSPStage        (Section 3.1, Eq. 1)
-#   attention: BiLevelRoutingAttention, applied at P4/P5 only (Section 3.2)
-#   heads    : four depthwise-separable decoupled heads Detect_Light,
-#              P2/P3/P4/P5 = 160/80/40/20                    (Section 3.3)
-#   loss     : DF-CIoU                                       (Section 3.4, see loss.py)
-#
-# Why BRA is restricted to P4/P5 (see Section 3.2):
-#   - at P2 (160) each of the 7x7 regions holds ~23x23 = 529 tokens; the gathered
-#     key/value tensors peak at tens of GB
-#   - at P3 (80) the peak is ~6 GB, still out of memory on an 8 GB device
-#   - at P4 (40) / P5 (20) the memory cost is negligible
-#   Coarse levels are also where sparse routing helps most, because one region
-#   spans a group of seated students; the accuracy cost of skipping the two
-#   high-resolution levels is small.
+# Ablation: GBH-YOLO with the stock YOLOv8 Detect head at all four scales instead of Detect_Light
+# (Table 3, row marked †; 12.01 M parameters after fuse()). Train with --df-ciou off.
 nc: 6
 
 scales:
@@ -62,4 +48,4 @@ head:
   - [-1, 1, BiLevelRoutingAttention, []]         # 29  BRA(P5/20) -> head P5/32
 
   # ===== four lightweight decoupled heads: P2/4(160), P3/8(80), P4/16(40), P5/32(20) =====
-  - [[18, 21, 25, 29], 1, Detect_Light, [nc]]    # 30  lightweight decoupled heads (4 scales)
+  - [[18, 21, 25, 29], 1, Detect, [nc]]          # 30  stock decoupled heads (4 scales)

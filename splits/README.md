@@ -1,17 +1,14 @@
 # Split lists
 
-`train.txt`, `val.txt` and `test.txt` contain the **filenames** of the images in
-each partition — 2,061 / 197 / 98 lines respectively. No images are included.
+`train.txt`, `val.txt` and `test.txt` list the image files of each partition:
+2,061 / 197 / 98 lines. No images are included.
 
-Generate them from a local copy of the dataset with:
+Filenames follow the Roboflow export pattern `<frame>_jpg.rf.<hash>.jpg`, where
+`<frame>` is the name of the annotated video frame.
 
-    python - <<'PY'
-    import os
-    for src, dst in [('train', 'train.txt'), ('valid', 'val.txt'), ('test', 'test.txt')]:
-        d = os.path.join('..', 'datasets', src, 'images')
-        with open(dst, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(sorted(os.listdir(d))) + '\n')
-    PY
-
-Check the filenames before publishing: remove anything that identifies a room,
-a date or a person.
+The dataset contains 982 annotated frames: 687 for training, 197 for validation
+and 98 for testing. Each training frame appears three times in `train.txt`,
+once for each of the three augmented versions produced by the export; the
+versions share the frame name and differ in the hash. Validation and test frames
+were not augmented and appear once. All versions of a frame are in the same
+partition, and no frame occurs in more than one partition.

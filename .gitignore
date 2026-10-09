@@ -2,6 +2,8 @@
 runs/
 datasets/
 *.pt
+# the released checkpoint is tracked on purpose
+!weights/GBH-YOLO_best.pt
 *.engine
 *.tflite
 *.onnx

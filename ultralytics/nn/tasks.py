@@ -1,11 +1,9 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
-from .Addmodules import *
 import contextlib
 from copy import deepcopy
 from pathlib import Path
 import torch
 import torch.nn as nn
-from .modules.ContextGuided import ContextGuidedBlock_Down,C2f_Context
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -49,6 +47,7 @@ from ultralytics.nn.modules import (
     Silence,
     WorldDetect,
 )
+from .Addmodules import BiLevelRoutingAttention, CSPStage, Detect_Light  # GBH-YOLO modules
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8OBBLoss, v8PoseLoss, v8SegmentationLoss
@@ -239,9 +238,7 @@ class BaseModel(nn.Module):
         """
         self = super()._apply(fn)
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Detect_AFPN4, Detect_AFPN3, Detect_ASFF, Detect_FRM, Detect_dyhead, CLLAHead,
-                          Detect_DySnakeConv, Detect_dyhead3, Detect_DySnakeConv, Segment_DBB, Detect_DBB, Detect_FASFF,
-                          RFAHead, RFASegment, RepHead, Detect_Adown, Detect_SA, Segment_SA, HATHead,Detect_Light)):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+        if isinstance(m, (Detect, Detect_Light)):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
             m.stride = fn(m.stride)
             m.anchors = fn(m.anchors)
             m.strides = fn(m.strides)
@@ -300,13 +297,10 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Detect_AFPN4, Detect_AFPN3, Detect_ASFF, Detect_FRM, Detect_dyhead, CLLAHead,
-                          Detect_DySnakeConv, Detect_dyhead3, Detect_DySnakeConv, Segment_DBB, Detect_DBB, Detect_FASFF,
-                          RFAHead, RFASegment, RepHead, Detect_Adown, Detect_SA, Segment_SA, HATHead,Detect_Light)):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+        if isinstance(m, (Detect, Detect_Light)):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
             s = 640  # 2x min stride
             m.inplace = self.inplace
-            forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Segment_DySnakeConv, Pose, Pose_DBB, Segment_DBB,
-                                                                     RFASegment, RFAPose, OBB, Pose_SA,  Segment_SA)) else self.forward(x)
+            forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose, OBB)) else self.forward(x)
             try:
                 m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward on CPU
             except RuntimeError:
@@ -884,152 +878,38 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
 
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
-        if m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, Focus,
-                 BottleneckCSP, C1, C2, C2f, RepNCSPELAN4, ADown, SPPELAN, C2fAttn, C3, C3TR, C3Ghost,
-                 nn.ConvTranspose2d,  DWConvTranspose2d, C3x, RepC3, C2f_ACmix, C2f_AKConv, AKConv, C2f_Context,
-                 C2f_DCNv2, DCNv2, DiverseBranchBlock, C2f_DBB, C2f_DLKA, C2f_DSConv, C2f_DWRSeg, C2f_EMA, C2f_FLA,
-                 C2f_iAFF, C2f_iRMB, C2f_MLCA, C2f_ODConv, ODConv2d, RCSOSA, CSPStage, RepConv, RFAConv, C2f_RFAConv,
-                 SAConv2d, C2f_SAConv, C2f_SCConv, C2f_SENetV1, C2f_SENetV2, VoVGSCSP, SPDConv, C2f_TripletAt, GSConv,
-                 C2f_iRMB_EMA, C2f_CGA, SimConv, nn.Conv2d, C2f_MSBlock, C2f_OREPA, C2f_DCNv4, CSPPC, CSPHet, C2f_Dual,
-                 C2f_DCNv3, Blocks, ConvNormLayer, C2f_FasterBlock, RepNCSPELAN4_high, SPPELAN, C2f_DCNv3_DLKA,
-                 RepNCSPELAN4_low, C2f_DynamicConv, DynamicConv, Down_wt, C2f_GhostModule_DynamicConv, C2f_UIB, C2fCIB,
-                 PSA, SCDown, C2fMLLABlock, MSFM, ModulatedDeformConv2dPack, DCDConv, C2f_WTConv, LDConv, C2f_SCSA1, C2f_SCSA2,
-                 StarADown):
+        if m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv,
+                 Focus, BottleneckCSP, C1, C2, C2f, RepNCSPELAN4, ADown, SPPELAN, C2fAttn,
+                 C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3,
+                 CSPStage, RepConv, nn.Conv2d):
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 if m is nn.Conv2d:
                     c2 = make_divisible(c2 * width, 8)
                 else:
                     c2 = make_divisible(min(c2, max_channels) * width, 8)
-            if m is Blocks:
-                if args[1][:10] in 'BottleNeck':
-                    c1, c2 = ch[f], args[0] * 4
-                    args = [c1, args[0], *args[1:]]
-                else:
-                    args = [c1, c2, *args[1:]]
-            else:
-                args = [c1, c2, *args[1:]]
+            args = [c1, c2, *args[1:]]
             if m is C2fAttn:
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)  # embed channels
                 args[2] = int(
                     max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
                 )  # num heads
-            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2f_ACmix, C2f_AKConv,
-                     C2f_DCNv2, C2f_DBB, C2f_DLKA, C2f_DSConv, C2f_DWRSeg, C2f_EMA, C2f_FLA, C2f_iAFF, C2f_iRMB,
-                     C2f_MLCA, C2f_ODConv, RCSOSA, CSPStage, C2f_RFAConv, C2f_SAConv, C2f_SCConv, C2f_SENetV1,
-                     C2f_SENetV2, VoVGSCSP, C2f_TripletAt, C2f_iRMB_EMA, C2f_CGA, C2f_MSBlock, C2f_OREPA, C2f_DCNv4,
-                     CSPPC, CSPHet, C2f_Dual, C2f_DCNv3, Blocks, C2f_FasterBlock, C2f_DCNv3_DLKA, C2f_DynamicConv,
-                     C2f_GhostModule_DynamicConv, C2f_UIB, C2fCIB, C2fMLLABlock, MSFM, C2f_WTConv, C2f_SCSA1, C2f_SCSA2,
-                     C2f_Context):
+            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, CSPStage):
                 args.insert(2, n)  # number of repeats
                 n = 1
 
-        # --------------------------------------- attention modules ------------------------
-        elif m in {BiLevelRoutingAttention, ContextGuidedBlock_Down, MultiDilatelocalAttention, LocalWindowAttention,
-                   SELayerV1, SELayerV2, HAT, EMA, MLCA, ACmix, CARAFE, DAttentionBaseline, iRMB_EMA,
-                   deformable_LKA_Attention, FocalModulation, FocusedLinearAttention, HAT, iRMB, LSKA, TripletAttention,
-                   OREPA, SCINet, Dy_Sample, CA, iAT, MultiSEAM, SEAM, deformable_LKA_Attention, ECA, GAM, CoordAtt, CBAM,
-                   SPDEMA, AirNet, ADNet, RIDNET, MLLAttention, LAE, SCSA}:
+        elif m is BiLevelRoutingAttention:
             c2 = ch[f]
             args = [c2, *args]
-        # --------------------------------------- attention modules -----------------------
-        # --------------------------------------- backbone ----------------------------
-        elif m in {vanillanet_5, vanillanet_6, vanillanet_7, vanillanet_8, vanillanet_9, vanillanet_10,vanillanet_11,
-                   vanillanet_12,
-                   repvit_m0_6, repvit_m0_9, repvit_m1_0, repvit_m1_1, repvit_m1_5, repvit_m2_3, LSKNet,
-                   LSKNET_Tiny,
-                   LSKNET_base, SwinTransformer, MobileNetV1, MobileNetV2, MobileNetV3, shufflenet_v1_x0_5,
-                   shufflenet_v1_x1_0, shufflenet_v1_x1_5, shufflenet_v1_x2_0, shufflenetv2, revcol_small,
-                   revcol_tiny,
-                   revcol_base, revcol_xlarge, revcol_large, efficient, efficientnet_v2, FasterNet,
-                   CSWin_64_12211_tiny_224, CSWin_64_24322_small_224, CSWin_96_24322_base_224,
-                   CSWin_144_24322_large_224,
-                   convnextv2_atto, convnextv2_large, convnextv2_base, convnextv2_tiny,
-                   transnext_micro, transnext_tiny, transnext_small, transnext_base,
-                   unireplknet_a, unireplknet_f, unireplknet_p, unireplknet_n, unireplknet_t, unireplknet_s,
-                   unireplknet_b, unireplknet_l, unireplknet_xl, EfficientViT_M0, EfficientViT_M1, EfficientViT_M2,
-                   EfficientViT_M3, EfficientViT_M4, EfficientViT_M5, Ghostnetv1, Ghostnetv2,
-                   EMO_1M, EMO_2M, EMO_5M, EMO_6M, mobile_vit_small, mobile_vit_x_small, mobile_vit_xx_small,
-                   mobile_vit2_xx_small, MobileNetV4ConvSmall, MobileNetV4ConvLarge, MobileNetV4ConvMedium,
-                   MobileNetV4HybridMedium, MobileNetV4HybridLarge, pvt_v2_b0, pvt_v2_b1, pvt_v2_b2, pvt_v2_b3, pvt_v2_b4,
-                   pvt_v2_b5, MobileNetV4ConvSmallPENet, shufflenetv2PEYOLO}:
-            m = m(*args)
-            c2 = m.width_list  # channel list
-            backbone = True
-
-        elif m in {SwinTransformer}:
-            m = m()
-            c2 = m.width_list  # channel list
-            backbone = True
-
-        # --------------------------------------- backbone ----------------------------
-        elif m in {FreqFusion}:
-            c2 = ch[f[0]]
-            args = [[ch[x] for x in f], *args]
-        # -----------------------------GOLD-YOLO--------------------------------
-        elif m in (Low_FAM, High_FAM, High_LAF):
-            c2 = sum(ch[x] for x in f)
-        elif m is High_IFM:
-            args[1] = make_divisible(args[1] * width, 8)
-        elif m is Low_IFM:
-            c1, c2 = ch[f], args[2]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
-                c2 = make_divisible(min(c2, max_channels) * width, 8)
-            args = [c1, *args[:-1], c2]
-        elif m is Low_LAF:
-            c1, c2 = ch[f[1]], args[0]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
-                c2 = make_divisible(min(c2, max_channels) * width, 8)
-            args = [c1, c2, *args[1:]]
-        elif m is Inject:
-            global_index = args[1]
-            c1, c2 = ch[f[1]][global_index], args[0]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
-                c2 = make_divisible(min(c2, max_channels) * width, 8)
-            args = [c1, c2, global_index]
-        elif m is RepBlock:
-            c1, c2 = ch[f], args[0]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
-                c2 = make_divisible(min(c2, max_channels) * width, 8)
-            nums_repeat = max(round(args[1] * depth), 1) if args[1] > 1 else args[1]  # depth gain
-            args = [c1, c2, nums_repeat]
-        elif m is Split:
-            c1 = ch[f]
-            goldyolo = True
-            c2 = []
-            for arg in args:
-                if arg != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
-                    c2.append(make_divisible(min(arg, max_channels) * width, 8))
-            args = [c2]
-        # -----------------------------GOLD-YOLO--------------------------------
-        # ------------------------------ASF-YOLO--------------------------------
-        elif m is Zoom_cat:
-            c2 = sum(ch[x] for x in f)
-        elif m is Add:
-            c2 = ch[f[-1]]
-        elif m is ScalSeq:
-            c1 = [ch[x] for x in f]
-            c2 = make_divisible(args[0] * width, 8)
-            args = [c1, c2]
-        elif m is attention_model:
-            args = [ch[f[-1]]]
-        # ------------------------------ASF-YOLO--------------------------------
-        elif m is Bi_FPN:
-            length = len([ch[x] for x in f])
-            args = [length]
-        elif m is SDI:
-            args = [[ch[x] for x in f]]
-        elif m is multiply:
-            c2 = ch[f[0]]
         elif m is AIFI:
             args = [ch[f], *args]
-        elif m in (HGStem, HGBlock, Light_HGBlock):
+        elif m in (HGStem, HGBlock):
             c1, cm, c2 = ch[f], args[0], args[1]
             cm = make_divisible(min(cm, max_channels) * width, 8)
             c2 = make_divisible(min(c2, max_channels) * width, 8)
             n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
             args = [c1, cm, c2, *args[2:]]
-            if m in (HGBlock, Light_HGBlock):
+            if m is HGBlock:
                 args.insert(4, n)  # number of repeats
                 n = 1
         elif m is ResNetLayer:
@@ -1038,12 +918,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
-        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, Detect_AFPN4,  Detect_AFPN3, Detect_ASFF,
-                   Detect_FRM, Detect_dyhead, CLLAHead, Detect_dyhead3, Detect_DySnakeConv, Segment_DySnakeConv,
-                   Pose_DBB, Segment_DBB, Detect_DBB, Detect_FASFF, RFAHead, RFASegment, RFAPose, RepHead,
-                   Detect_Adown, Pose_SA, Segment_SA, Detect_SA, HATHead,Detect_Light}:
+        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, Detect_Light}:
             args.append([ch[x] for x in f])
-            if m in (Segment, Segment_DySnakeConv, Segment_DBB, RFASegment, Segment_SA):
+            if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
@@ -1066,11 +943,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         m.np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type = i + 4 if backbone else i, f, t  # attach index, 'from' index, type
 
-        if m in [Inject, High_LAF]:
-            # input nums
-            m_.input_nums = len(f)
-        else:
-            m_.input_nums = 1
+        m_.input_nums = 1
 
         if verbose:
             LOGGER.info(f'{i:>3}{str(f):>20}{n_:>3}{m.np:10.0f}  {t:<45}{str(args):<30}')  # print
@@ -1171,17 +1044,15 @@ def guess_model_task(model):
                 return cfg2task(eval(x))
 
         for m in model.modules():
-            if isinstance(m, (Segment, Segment_DySnakeConv, Segment_DBB, RFASegment, Segment_SA)):
+            if isinstance(m, Segment):
                 return "segment"
             elif isinstance(m, Classify):
                 return "classify"
-            elif isinstance(m, (Pose, Pose_DBB, RFAPose, Pose_SA)):
+            elif isinstance(m, Pose):
                 return "pose"
             elif isinstance(m, OBB):
                 return "obb"
-            elif isinstance(m, (Detect, WorldDetect, Detect_AFPN4, Detect_AFPN3, Detect_ASFF, Detect_FRM,
-                                Detect_dyhead, CLLAHead, Detect_dyhead3, Detect_DySnakeConv, Detect_DBB, Detect_FASFF,
-                                RFAHead, RepHead, Detect_Adown, Detect_SA, HATHead,Detect_Light)):
+            elif isinstance(m, (Detect, WorldDetect, Detect_Light)):
                 return "detect"
 
     # Guess from model filename
